@@ -79,6 +79,20 @@ init([Cmd, IP, Port, SocketCount]) ->
 strip_ok({ok, Data}) -> Data;
 strip_ok(Data) -> Data.
 
+to_lengthprefix(<<131,97,L/binary>>) ->
+    % 1 byte int
+    <<1,L/binary>>;
+to_lengthprefix(<<131,98,L/binary>>) ->
+    % 4 byte int
+    <<4,L/binary>>;
+to_lengthprefix(<<_/binary>>) ->
+    % other, set 0 length
+    <<1,0>>;
+to_lengthprefix(Length) ->
+    % serialize the length
+    to_lengthprefix(erlang:term_to_binary(Length)).
+
+
 % TODO: Use poolboy instead of this hack of a pool.
 % If we run out of available processes, just make another one.
 % There should be a limit here. Maybe track used ones and make max 2xCount ports
@@ -86,6 +100,17 @@ strip_ok(Data) -> Data.
 handle_call({stdin, Content}, From, #state{available = []} = State) ->
   NewAvail = [setup(State)],
   handle_call({stdin, Content}, From, State#state{available = NewAvail});
+
+handle_call({stdin, {Content, len, Length}}, From, #state{available = [H|T]} = State) ->
+                                                % quickly spawn so we can be a non-blocking gen_server:
+    spawn(fun() ->
+                  port_connect(H, self()),             % attach port to this spawned process
+                  port_command(H, to_lengthprefix(Length)),  % send the content's length
+                  port_command(H, strip_ok(Content)),  % send our stdin content to the wrapper
+                  gen_server:reply(From, gather_response(H)),
+                  port_close(H)
+          end),
+    {noreply, State#state{available = T}};
 
 handle_call({stdin, Content}, From, #state{available = [H|T]} = State) ->
   % quickly spawn so we can be a non-blocking gen_server:

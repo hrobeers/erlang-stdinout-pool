@@ -57,6 +57,7 @@ void toSTDOUT(int fd, const char firstByte) {
 int main(int argc, char *argv[]) {
     int readpipe[2], writepipe[2], errorpipe[2];
     int unused __attribute__((unused));
+    ssize_t result;
     pid_t cpid;
 
     assert(1 < argc && argc < 64);
@@ -107,18 +108,50 @@ int main(int argc, char *argv[]) {
         _exit(EXIT_FAILURE); /* Silence a warning */
     } else {
         /* Original Parent Process */
-        char buf;
+        char buf[4];
+        uint32_t len = 0;
 
         close(CHILD_READ); /* We aren't the child.  Close its read/write. */
         close(CHILD_WRITE);
         close(CHILD_ERROR);
 
-        /* Read until 0 byte */
-        /* TODO: Create a better length-prefixed protocol so we don't
-         *       rely on a single end-of-stream byte markers. */
-        while (read(STDIN_FILENO, &buf, 1) > 0 && buf != 0x0) {
-            unused = write(PARENT_WRITE, &buf, 1);
+        /* Read length prefix info */
+        if (read(STDIN_FILENO, buf, 1)<1)
+          goto NOINPUT;
+        switch (buf[0]) {
+        case 0:
+          goto NOINPUT;
+        case 1:
+          if (read(STDIN_FILENO, buf, 1)<1)
+            exit(EXIT_FAILURE);
+          len = (uint32_t)buf[0];
+          break;
+        case 4:
+          for (int i=0; i<4; i++)
+            if (read(STDIN_FILENO, &buf[i], 1)<1)
+              goto NOINPUT;
+          /*
+          while(4-len)
+            len+=read(STDIN_FILENO, &buf[len], 4-len);
+          */
+          len = (uint32_t)buf[0] << 24 |
+            (uint32_t)buf[1] << 16 |
+            (uint32_t)buf[2] << 8  |
+            (uint32_t)buf[3];
+          break;
+        default:
+          unused = write(PARENT_WRITE, buf, 1);
+          break;
         }
+        /* Read until len or 0 byte */
+        while (read(STDIN_FILENO, buf, 1) > 0 && (len!=0 || buf[0] != 0x0)) {
+          while(write(PARENT_WRITE, buf, 1)==0)
+            usleep(100);
+          if (len!=0 && --len==0)
+            break;
+        }
+
+    NOINPUT: // When not input, continue here
         close(PARENT_WRITE); /* closing PARENT_WRITE sends EOF to CHILD_READ */
 
         toSTDOUT(PARENT_READ, (uint8_t)SUCCESS_BYTE);
