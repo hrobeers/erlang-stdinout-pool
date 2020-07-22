@@ -32,12 +32,12 @@ int dup2close(int oldfd, int newfd) {
     return close(oldfd);
 }
 
-void toSTDOUT(int fd, const char firstByte) {
+void toSTDOUT(FILE* fin, const char firstByte) {
     char buf[BUFSIZ];
     ssize_t count;
 
     do {
-        count = read(fd, buf, BUFSIZ);
+        count = fread(buf, 1, BUFSIZ, fin);
     } while (count == -1 && errno == EINTR);
 
     if (count == -1) {
@@ -45,13 +45,14 @@ void toSTDOUT(int fd, const char firstByte) {
         exit(1);
     } else if (count > 0) {
         if (firstByte)
-            write(STDOUT_FILENO, &firstByte, 1); /* Write first byte */
+            fwrite(&firstByte, 1, 1, stdout); /* Write first byte */
 
         do {
-            write(STDOUT_FILENO, buf, count); /* write buffer to STDOUT */
-            count = read(fd, buf, BUFSIZ);
+            fwrite(buf, 1, count, stdout); /* write buffer to STDOUT */
+            count = fread(buf, 1, BUFSIZ, fin);
         } while (count > 0);
     }
+    fclose(fin);
 }
 
 int main(int argc, char *argv[]) {
@@ -107,26 +108,62 @@ int main(int argc, char *argv[]) {
         _exit(EXIT_FAILURE); /* Silence a warning */
     } else {
         /* Original Parent Process */
-        char buf;
+        char buf[4];
+        uint32_t len = 0;
 
         close(CHILD_READ); /* We aren't the child.  Close its read/write. */
         close(CHILD_WRITE);
         close(CHILD_ERROR);
 
-        /* Read until 0 byte */
-        /* TODO: Create a better length-prefixed protocol so we don't
-         *       rely on a single end-of-stream byte markers. */
-        while (read(STDIN_FILENO, &buf, 1) > 0 && buf != 0x0) {
-            unused = write(PARENT_WRITE, &buf, 1);
+        FILE* write_fd = fdopen(PARENT_WRITE, "wb");
+
+        /* Read length prefix info */
+        if (fread(buf, 1, 1, stdin)<1)
+          goto NOINPUT;
+        switch (buf[0]) {
+        case 0:
+          goto NOINPUT;
+        case 1:
+          if (fread(buf, 1, 1, stdin)<1)
+            exit(EXIT_FAILURE);
+          len = (uint32_t)buf[0];
+          break;
+        case 4:
+          for (int i=0; i<4; i++)
+            if (fread(&buf[i], 1, 1, stdin)<1)
+              goto NOINPUT;
+          /*
+          while(4-len)
+            len+=read(STDIN_FILENO, &buf[len], 4-len);
+          */
+          len = (uint32_t)buf[0] << 24 |
+            (uint32_t)buf[1] << 16 |
+            (uint32_t)buf[2] << 8  |
+            (uint32_t)buf[3];
+          break;
+        default:
+          unused = fwrite(buf, 1, 1, write_fd);
+          break;
         }
-        close(PARENT_WRITE); /* closing PARENT_WRITE sends EOF to CHILD_READ */
+        /* Read until len or 0 byte */
+        while (fread(buf, 1, 1, stdin) > 0 && (len!=0 || buf[0] != 0x0)) {
+          while(fwrite(buf, 1, 1, write_fd)==0)
+            usleep(100);
+          if (len!=0 && --len==0)
+            break;
+        }
 
-        toSTDOUT(PARENT_READ, (uint8_t)SUCCESS_BYTE);
-        toSTDOUT(PARENT_ERROR, (uint8_t)ERROR_BYTE);
+    NOINPUT: // When not input, continue here
+        fclose(write_fd); /* closing PARENT_WRITE sends EOF to CHILD_READ */
 
-        close(PARENT_READ);   /* done reading from writepipe */
-        close(PARENT_ERROR);  /* done reading from errorpipe */
-        close(STDOUT_FILENO); /* done writing to stdout */
+        toSTDOUT(fdopen(PARENT_READ, "r"), (uint8_t)SUCCESS_BYTE);
+        toSTDOUT(fdopen(PARENT_ERROR, "r"), (uint8_t)ERROR_BYTE);
+
+        //close(PARENT_READ);   /* done reading from writepipe */
+        //close(PARENT_ERROR);  /* done reading from errorpipe */
+        //close(STDOUT_FILENO); /* done writing to stdout */
+        fclose(stdin);
+        fclose(stdout);
 
         wait(NULL); /* Wait for child to exit */
 

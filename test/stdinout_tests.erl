@@ -74,7 +74,12 @@ everything_erlang_API_in_parallel_test_() ->
           % Assert that binary responses on stdout can start with status byte 145 or 146
           ?_E(<<145,23,88,97>>, ?B_OUT(stdinout:send(cat1, <<145,23,88,97>>))),
           ?_E(<<146,23,88,97>>, ?B_OUT(stdinout:send(cat1, <<146,23,88,97>>))),
-          ?_E(<<146,23,88,97>>, ?B_OUT(stdinout:pipe(<<146,23,88,97>>,[cat1, cat2, cat3, cat4])))
+          ?_E(<<146,23,88,97>>, ?B_OUT(stdinout:pipe(<<146,23,88,97>>,[cat1, cat2, cat3, cat4]))),
+
+          % Test length prefixed binary input
+          ?_E(<<"hel">>,       ?B_OUT(stdinout:send(cat1, {"hello", len, 3}))),        % Partial processing
+          ?_E(<<1,2,3,4,5>>,   ?B_OUT(stdinout:send(cat1, {<<1,2,3,4,5>>, len, 5}))),  % Binary without null
+          ?_E(<<1,2,3,0,4,5>>, ?B_OUT(stdinout:send(cat1, {<<1,2,3,0,4,5>>, len, 6}))) % Binary with null
         ]
       }
     end
